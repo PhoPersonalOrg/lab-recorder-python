@@ -2217,3 +2217,4 @@
 **/__pycache__
 **/desktop.ini
 test_output_corrected.xdf
+build
