@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import copy
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
@@ -97,11 +98,14 @@ class Config:
         'recording': {
             'buffer_size': 360,
             'max_samples_per_pull': 500,
-            'clock_sync_interval': 5.0
+            'clock_sync_interval': 5.0,
+            'boundary_interval': 10.0
         },
         'streams': {
             'timeout': 2.0,
-            'recover': True
+            'recover': True,
+            'watch_for_new_streams': True,
+            'discovery_interval': 5.0
         }
     }
     
@@ -112,7 +116,7 @@ class Config:
         Args:
             config_file: Path to configuration file (optional)
         """
-        self.config = self.DEFAULT_CONFIG.copy()
+        self.config = copy.deepcopy(self.DEFAULT_CONFIG)
         self.config_file = config_file
         
         if config_file and os.path.exists(config_file):

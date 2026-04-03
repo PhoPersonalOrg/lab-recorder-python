@@ -18,7 +18,7 @@ def read_requirements():
 
 setup(
     name="lab-recorder-python",
-    version="1.0.0",
+    version="3.0.0",
     author="Yahmin Haj",
     description="A cross-platform Python implementation of Lab Streaming Layer (LSL) recorder",
     long_description=read_readme(),

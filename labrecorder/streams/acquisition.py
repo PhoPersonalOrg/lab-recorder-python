@@ -5,14 +5,13 @@ Data acquisition threads for LSL streams.
 import time
 import threading
 import pylsl
-from typing import List, Tuple, Callable
+from typing import Callable, Optional
 
 
 class AcquisitionThread:
     """Thread for acquiring data from a single LSL stream."""
     
-    def __init__(self, stream_uid: str, stream_info: pylsl.StreamInfo, 
-                 inlet: pylsl.StreamInlet, data_callback: Callable):
+    def __init__(self, stream_uid: str, stream_info: pylsl.StreamInfo, inlet: pylsl.StreamInlet, data_callback: Callable, clock_reset_callback: Optional[Callable] = None, max_samples_per_pull: Optional[int] = None):
         """
         Initialize acquisition thread.
         
@@ -26,13 +25,14 @@ class AcquisitionThread:
         self.stream_info = stream_info
         self.inlet = inlet
         self.data_callback = data_callback
+        self.clock_reset_callback = clock_reset_callback
         
         self.thread = None
         self.running = False
         self.last_timestamp = None
         
         # Calculate max samples per pull based on sampling rate
-        self.max_samples_per_pull = self._calculate_max_samples()
+        self.max_samples_per_pull = max_samples_per_pull or self._calculate_max_samples()
         
     def _calculate_max_samples(self) -> int:
         """Calculate optimal number of samples to pull at once."""
@@ -69,50 +69,34 @@ class AcquisitionThread:
     def _acquisition_loop(self) -> None:
         """Main acquisition loop running in the thread."""
         stream_name = self.stream_info.name()
-        buffer_list = []  # Local buffer for this thread
         
         try:
             while self.running:
-                # Pull data from the stream
                 samples, timestamps = self.inlet.pull_chunk(
                     timeout=0.1, 
                     max_samples=self.max_samples_per_pull
                 )
                 
                 if timestamps:
-                    buffer_list.append((samples, timestamps))
                     self.last_timestamp = timestamps[-1]
-                    
-                    # Send data to callback in batches to avoid too frequent calls
-                    if len(buffer_list) > 10:
-                        for samples_chunk, timestamps_chunk in buffer_list:
-                            self.data_callback(self.stream_uid, samples_chunk, timestamps_chunk)
-                        buffer_list.clear()
-                        
+                    self.data_callback(self.stream_uid, samples, timestamps)
                 elif self.inlet.was_clock_reset():
                     print(f"Clock reset detected for stream {stream_name}. Re-evaluating sync.")
-                    # Handle clock reset if necessary
-                    # Could write a new ClockOffset chunk here
-                    pass
-                    
+                    if self.clock_reset_callback is not None:
+                        self.clock_reset_callback(self.stream_uid)
                 else:
-                    # No data received, small sleep to prevent busy-waiting
                     time.sleep(0.001)
                     
         except Exception as e:
             print(f"Error in acquisition thread for {stream_name}: {e}")
         finally:
-            # Send any remaining buffered data
-            if buffer_list:
-                for samples_chunk, timestamps_chunk in buffer_list:
-                    self.data_callback(self.stream_uid, samples_chunk, timestamps_chunk)
             print(f"Acquisition thread for {stream_name} finished.")
 
 
 class AcquisitionManager:
     """Manages multiple acquisition threads."""
     
-    def __init__(self, data_callback: Callable):
+    def __init__(self, data_callback: Callable, clock_reset_callback: Optional[Callable] = None, max_samples_per_pull: Optional[int] = None):
         """
         Initialize acquisition manager.
         
@@ -120,11 +104,13 @@ class AcquisitionManager:
             data_callback: Callback function for data (stream_uid, samples, timestamps)
         """
         self.data_callback = data_callback
+        self.clock_reset_callback = clock_reset_callback
+        self.max_samples_per_pull = max_samples_per_pull
         self.acquisition_threads = {}
         self.buffer_lock = threading.Lock()
+        self.running = False
         
-    def add_stream(self, stream_uid: str, stream_info: pylsl.StreamInfo, 
-                   inlet: pylsl.StreamInlet) -> None:
+    def add_stream(self, stream_uid: str, stream_info: pylsl.StreamInfo, inlet: pylsl.StreamInlet) -> None:
         """
         Add a stream for acquisition.
         
@@ -133,19 +119,29 @@ class AcquisitionManager:
             stream_info: LSL StreamInfo object
             inlet: LSL StreamInlet for data acquisition
         """
-        thread = AcquisitionThread(stream_uid, stream_info, inlet, self.data_callback)
+        thread = AcquisitionThread(stream_uid, stream_info, inlet, self.data_callback, clock_reset_callback=self.clock_reset_callback, max_samples_per_pull=self.max_samples_per_pull)
         self.acquisition_threads[stream_uid] = thread
+        if self.running:
+            thread.start()
         
     def start_all(self) -> None:
         """Start acquisition for all streams."""
+        self.running = True
         for thread in self.acquisition_threads.values():
             thread.start()
             
     def stop_all(self) -> None:
         """Stop acquisition for all streams."""
+        self.running = False
         for thread in self.acquisition_threads.values():
             thread.stop()
         self.acquisition_threads.clear()
+
+
+    def stop_stream(self, stream_uid: str) -> None:
+        thread = self.acquisition_threads.pop(stream_uid, None)
+        if thread is not None:
+            thread.stop()
         
     def get_last_timestamps(self) -> dict:
         """Get last timestamp for each stream."""

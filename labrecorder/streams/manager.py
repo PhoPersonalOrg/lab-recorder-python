@@ -12,6 +12,7 @@ class StreamManager:
     def __init__(self):
         self.discovered_streams: Dict[str, pylsl.StreamInfo] = {}
         self.selected_stream_uids: Set[str] = set()
+        self.select_all_active = False
     
     def find_streams(self, timeout: float = 2.0) -> List[pylsl.StreamInfo]:
         """
@@ -36,6 +37,9 @@ class StreamManager:
         for i, info in enumerate(streams_info_list):
             print(f"  {i+1}. Name: {info.name()}, Type: {info.type()}, UID: {info.uid()}")
             self.discovered_streams[info.uid()] = info
+
+        if self.select_all_active:
+            self.selected_stream_uids.update(self.discovered_streams.keys())
             
         return streams_info_list
     
@@ -46,6 +50,7 @@ class StreamManager:
         Args:
             stream_uids: List of stream UIDs to select
         """
+        self.select_all_active = False
         self.selected_stream_uids.clear()
         
         for uid in stream_uids:
@@ -67,13 +72,15 @@ class StreamManager:
             self.find_streams()
         
         if self.discovered_streams:
+            self.select_all_active = True
             uids = list(self.discovered_streams.keys())
-            self.select_streams(uids)
+            self.selected_stream_uids = set(uids)
             return len(uids)
         return 0
     
     def deselect_all_streams(self) -> None:
         """Deselect all streams."""
+        self.select_all_active = False
         self.selected_stream_uids.clear()
     
     def get_selected_streams(self) -> Dict[str, pylsl.StreamInfo]:
@@ -87,6 +94,14 @@ class StreamManager:
             uid: self.discovered_streams[uid] 
             for uid in self.selected_stream_uids 
             if uid in self.discovered_streams
+        }
+
+
+    def get_unrecorded_selected_streams(self, active_stream_uids: Set[str]) -> Dict[str, pylsl.StreamInfo]:
+        return {
+            uid: info
+            for uid, info in self.get_selected_streams().items()
+            if uid not in active_stream_uids
         }
     
     def get_stream_info(self, uid: str) -> pylsl.StreamInfo:

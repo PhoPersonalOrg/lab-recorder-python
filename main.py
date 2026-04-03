@@ -102,10 +102,9 @@ Examples:
         
         if available_streams:
             # Select all streams by default
-            uids_to_record = [info.uid() for info in available_streams]
-            recorder.select_streams_to_record(uids_to_record)
+            selected_count = recorder.select_all_streams()
             
-            print(f"\nSelected {len(uids_to_record)} streams for recording.")
+            print(f"\nSelected {selected_count} streams for recording.")
             
             if enable_remote and not auto_start:
                 print("\nRecorder ready. Use remote control commands to start/stop recording.")
