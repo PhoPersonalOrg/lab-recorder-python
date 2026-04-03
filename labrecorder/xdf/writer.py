@@ -121,7 +121,7 @@ class SimpleXDFWriter:
             raise ValueError(f"Sample/timestamp mismatch for stream {stream_key}: {len(samples)} != {len(timestamps)}")
 
         payload = bytearray()
-        payload.extend(self._encode_fixlen_int(len(samples), 4))
+        payload.extend(self._encode_varlen_int(len(samples)))
         written_count = 0
 
         for sample, timestamp in zip(samples, timestamps):
@@ -245,9 +245,7 @@ class SimpleXDFWriter:
 
 
     def _normalize_sample(self, sample: Any, channel_count: int, is_string_stream: bool) -> List[Any]:
-        if channel_count == 1 and (is_string_stream or not isinstance(sample, (list, tuple))):
-            values = [sample]
-        elif isinstance(sample, (list, tuple)):
+        if isinstance(sample, (list, tuple)):
             values = list(sample)
         else:
             values = [sample]
