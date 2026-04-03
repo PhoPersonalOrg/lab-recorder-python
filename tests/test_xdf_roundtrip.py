@@ -1,69 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
-
-from pylsl import cf_float32, cf_string
+from typing import Any, cast
 
 from labrecorder.xdf.inspector import inspect_xdf_file
 from labrecorder.xdf.writer import SimpleXDFWriter
-
-try:
-    import pyxdf
-except ImportError:  # pragma: no cover - handled via test skip
-    pyxdf = None
-
-
-class DummyStreamInfo:
-    def __init__(self, name: str, stream_type: str, channel_count: int, nominal_srate: float, channel_format: int, source_id: str, uid: str):
-        self._name = name
-        self._type = stream_type
-        self._channel_count = channel_count
-        self._nominal_srate = nominal_srate
-        self._channel_format = channel_format
-        self._source_id = source_id
-        self._uid = uid
-
-
-    def as_xml(self) -> str:
-        return (
-            "<?xml version=\"1.0\"?>"
-            "<info>"
-            f"<name>{self._name}</name>"
-            f"<type>{self._type}</type>"
-            f"<channel_count>{self._channel_count}</channel_count>"
-            f"<nominal_srate>{self._nominal_srate}</nominal_srate>"
-            f"<channel_format>{'string' if self._channel_format == cf_string else 'float32'}</channel_format>"
-            f"<source_id>{self._source_id}</source_id>"
-            "</info>"
-        )
-
-
-    def name(self) -> str:
-        return self._name
-
-
-    def type(self) -> str:
-        return self._type
-
-
-    def channel_count(self) -> int:
-        return self._channel_count
-
-
-    def nominal_srate(self) -> float:
-        return self._nominal_srate
-
-
-    def channel_format(self) -> int:
-        return self._channel_format
-
-
-    def source_id(self) -> str:
-        return self._source_id
-
-
-    def uid(self) -> str:
-        return self._uid
+from tests.xdf_test_utils import MINIMAL_EEG_CLOCK_TIMES, MINIMAL_EEG_CLOCK_VALUES, MINIMAL_EEG_SAMPLES, MINIMAL_EEG_TIMESTAMPS, MINIMAL_EEG_WRITER_TIMESTAMPS, MINIMAL_MARKER_SAMPLES, MINIMAL_MARKER_TIMESTAMPS, MINIMAL_MARKER_WRITER_SAMPLES, MINIMAL_REFERENCE_FOOTER_XML, assert_xdf_matches_fixture, build_minimal_stream_infos, pyxdf
 
 
 @unittest.skipIf(pyxdf is None, "pyxdf is required for round-trip validation")
@@ -71,20 +13,7 @@ class TestXDFRoundTrip(unittest.TestCase):
     def test_writer_produces_pyxdf_readable_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "roundtrip.xdf"
-            writer = SimpleXDFWriter(str(output_path))
-            eeg_info = DummyStreamInfo("TestEEG", "EEG", 2, 100.0, cf_float32, "eeg-source", "eeg-uid")
-            marker_info = DummyStreamInfo("Markers", "Markers", 1, 0.0, cf_string, "marker-source", "marker-uid")
-
-            writer.open()
-            writer.add_stream(eeg_info, stream_key=eeg_info.uid())
-            writer.add_stream(marker_info, stream_key=marker_info.uid())
-            writer.write_clock_offset(eeg_info.uid(), 1.0, 0.001)
-            writer.write_boundary_chunk()
-            writer.write_samples(eeg_info.uid(), [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], [1.0, 0.0, 1.02])
-            writer.write_samples(marker_info.uid(), [["A"], ["B"]], [1.5, 2.5])
-            writer.write_stream_footer(eeg_info.uid())
-            writer.write_stream_footer(marker_info.uid())
-            writer.close()
+            self._write_minimal_fixture_equivalent(output_path)
 
             self.assertTrue(inspect_xdf_file(str(output_path)))
             streams, header = pyxdf.load_xdf(str(output_path))
@@ -92,11 +21,40 @@ class TestXDFRoundTrip(unittest.TestCase):
             self.assertEqual(len(streams), 2)
             self.assertIn("info", streams[0])
             stream_names = {stream["info"]["name"][0] for stream in streams}
-            self.assertEqual(stream_names, {"TestEEG", "Markers"})
-            eeg_stream = next(stream for stream in streams if stream["info"]["name"][0] == "TestEEG")
-            marker_stream = next(stream for stream in streams if stream["info"]["name"][0] == "Markers")
-            self.assertEqual(len(eeg_stream["time_stamps"]), 3)
-            self.assertEqual(len(marker_stream["time_stamps"]), 2)
+            self.assertEqual(stream_names, {"SendDataC", "SendDataString"})
+            self.assertIsInstance(header, dict)
+
+            eeg_stream = next(stream for stream in streams if stream["info"]["name"][0] == "SendDataC")
+            marker_stream = next(stream for stream in streams if stream["info"]["name"][0] == "SendDataString")
+
+            self.assertEqual(eeg_stream["time_series"].tolist(), MINIMAL_EEG_SAMPLES)
+            self.assertEqual([round(float(value), 6) for value in eeg_stream["time_stamps"]], MINIMAL_EEG_TIMESTAMPS)
+            self.assertEqual([round(float(value), 6) for value in eeg_stream["clock_times"]], MINIMAL_EEG_CLOCK_TIMES)
+            self.assertEqual([round(float(value), 6) for value in eeg_stream["clock_values"]], MINIMAL_EEG_CLOCK_VALUES)
+            self.assertEqual(marker_stream["time_series"], MINIMAL_MARKER_SAMPLES)
+            self.assertEqual([round(float(value), 6) for value in marker_stream["time_stamps"]], MINIMAL_MARKER_TIMESTAMPS)
+            self.assertEqual(eeg_stream["footer"]["info"]["sample_count"][0], "9")
+            self.assertEqual(marker_stream["footer"]["info"]["sample_count"][0], "9")
+            self.assertEqual(marker_stream["time_series"][0][0], MINIMAL_REFERENCE_FOOTER_XML)
+
+            assert_xdf_matches_fixture(self, output_path, include_clock_offsets=False)
+
+
+    def _write_minimal_fixture_equivalent(self, output_path: Path) -> None:
+        writer = SimpleXDFWriter(str(output_path))
+        eeg_info, marker_info = build_minimal_stream_infos()
+
+        writer.open()
+        writer.add_stream(cast(Any, eeg_info), stream_key=eeg_info.uid())
+        writer.add_stream(cast(Any, marker_info), stream_key=marker_info.uid())
+        writer.write_clock_offset(eeg_info.uid(), MINIMAL_EEG_CLOCK_TIMES[0], MINIMAL_EEG_CLOCK_VALUES[0])
+        writer.write_samples(eeg_info.uid(), MINIMAL_EEG_SAMPLES, MINIMAL_EEG_WRITER_TIMESTAMPS)
+        writer.write_samples(marker_info.uid(), MINIMAL_MARKER_WRITER_SAMPLES, MINIMAL_MARKER_TIMESTAMPS)
+        writer.write_clock_offset(eeg_info.uid(), MINIMAL_EEG_CLOCK_TIMES[1], MINIMAL_EEG_CLOCK_VALUES[1])
+        writer.write_boundary_chunk()
+        writer.write_stream_footer(eeg_info.uid(), xml_content=MINIMAL_REFERENCE_FOOTER_XML)
+        writer.write_stream_footer(marker_info.uid(), xml_content=MINIMAL_REFERENCE_FOOTER_XML)
+        writer.close()
 
 
 if __name__ == "__main__":

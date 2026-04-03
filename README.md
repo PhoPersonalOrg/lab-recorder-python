@@ -6,6 +6,30 @@ A Python implementation of a Lab Streaming Layer (LSL) recorder that saves multi
 
 Records data from LSL streams (EEG, markers, etc.) to XDF files with proper synchronization. Includes remote control via TCP commands for integration with experiments.
 
+## XDF Parity Status
+
+The Python recorder now targets real XDF 1.0 output that is compatible with the official XDF layout used by `App-LabRecorder` and expected by `pyxdf`.
+
+Current status:
+- Writes spec-compliant XDF chunk headers.
+- Writes `FileHeader`, `StreamHeader`, `Samples`, `ClockOffset`, `Boundary`, and `StreamFooter` chunks.
+- Preserves full LSL stream XML when available from the inlet.
+- Tracks `first_timestamp`, `last_timestamp`, `sample_count`, and clock offset history in stream footers.
+- Supports both `.xdf` and `.xdfz` output.
+- Includes round-trip validation against `pyxdf`.
+
+## Potential Differences From `App-LabRecorder`
+
+This implementation aims for functional parity, but it is not guaranteed to be byte-for-byte identical to the C++ recorder.
+
+Known or likely differences:
+- The Python recorder does not reproduce the exact C++ thread structure or internal phase coordination model.
+- Late stream attachment is implemented through ongoing discovery plus selected-stream attachment, not the same watchlist query thread model used in the C++ app.
+- The Python implementation does not currently mirror every `syncOptions` or GUI-driven behavior from `App-LabRecorder`.
+- Exact chunk interleaving during live recording may differ even when the resulting file is structurally valid.
+- Desktop application features outside core recording and XDF writing are still narrower than the full C++ app.
+- Interoperability is validated against `pyxdf`, but other downstream XDF tools should still be verified in your workflow.
+
 ## Installation
 
 ```bash
@@ -13,7 +37,7 @@ git clone https://github.com/your-username/lab-recorder-python.git
 cd lab-recorder-python
 
 # Install dependencies
-pip install -r requirements.txt
+uv sync --all-extras
 ```
 
 ## Basic Usage
@@ -49,13 +73,13 @@ python tools/remote_client.py stop
 
 ```bash
 # Terminal 1: Start test streams
-python tools/send_dummy.py
+uv run python tools/dummy_sender.py
 
 # Terminal 2: Record the test data  
-python main.py -f test.xdf
+uv run python main.py -f test.xdf
 
 # Terminal 3: Verify the recording
-python tools/inspect_xdf.py test.xdf
+uv run python tools/inspect_xdf.py test.xdf
 ```
 
 ## Remote Control Commands
@@ -79,10 +103,10 @@ Connect to `localhost:22345` and send these commands:
 │   ├── xdf/              # XDF file writing
 │   ├── remote_control/   # TCP remote control
 │   └── utils/            # Configuration and utilities
+├── tests/                 # Round-trip and validation tests
 └── tools/                # Testing and utility scripts
-    ├── streamer.py       # Generate test LSL streams
-    ├── tester.py         # Verify recordings (pyxdf)
-    ├── alternative_tester.py # Verify recordings (custom)
+    ├── dummy_sender.py   # Generate test LSL streams
+    ├── dummy_receiver.py # Receive dummy LSL streams
     ├── inspect_xdf.py    # Examine XDF files
     └── remote_client.py  # Command-line remote control
 ```
@@ -107,7 +131,7 @@ Options:
 
 **Recording issues**: Check that you have write permissions in the output directory and enough disk space.
 
-**Cross-compatibility issues**: If pyxdf can't read your files, use `python tools/inspect_xdf.py filename.xdf` to verify the recording and `python tools/alternative_tester.py filename.xdf` for validation.
+**Cross-compatibility issues**: Use `uv run python tools/inspect_xdf.py filename.xdf` to inspect the file structure, and run `uv run python -m unittest tests.test_xdf_roundtrip` to verify local `pyxdf` round-trip behavior.
 
 ## Requirements
 
