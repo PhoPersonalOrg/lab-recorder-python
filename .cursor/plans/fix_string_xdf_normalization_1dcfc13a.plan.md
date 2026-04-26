@@ -7,7 +7,7 @@ todos:
     status: completed
   - id: regression-test
     content: "Add unit test: write_samples with list-shaped string samples (LSL style), load with pyxdf, assert inner strings match plain text (not repr of list)."
-    status: in_progress
+    status: completed
 isProject: false
 ---
 

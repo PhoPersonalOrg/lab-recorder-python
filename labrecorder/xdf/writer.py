@@ -245,7 +245,7 @@ class SimpleXDFWriter:
 
 
     def _normalize_sample(self, sample: Any, channel_count: int, is_string_stream: bool) -> List[Any]:
-        if channel_count == 1 and (is_string_stream or not isinstance(sample, (list, tuple))):
+        if channel_count == 1 and not isinstance(sample, (list, tuple)):
             values = [sample]
         elif isinstance(sample, (list, tuple)):
             values = list(sample)
