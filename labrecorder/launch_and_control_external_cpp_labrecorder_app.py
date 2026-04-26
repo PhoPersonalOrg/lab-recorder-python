@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Run with: uv run python -m officialemotivsoftwarereverseengineer.launchers.launch_labrecorder_capture
+"""Run with: uv run python -m labrecorder.launch_and_control_external_cpp_labrecorder_app
 Launches LabRecorder in the background with the Emotiv capture config and starts recording all available streams.
 
 After start, the launcher queries RCS ``recordingpath`` and prints the active XDF path. That command is provided
@@ -19,13 +19,6 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-import threading
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
-
-from dotenv import load_dotenv
 
 logger = logging.getLogger("lab-recorder-python.ExternalCppLabRecorderBridge")
 
@@ -151,7 +144,7 @@ class ExternalLabRecorderInstance:
         """Send RCS ``stop`` so LabRecorder closes the XDF in-process. Does not terminate LabRecorder."""
         log = logging.getLogger(__name__)
         try:
-            send_rcs_command(host, port, "stop", timeout_s=timeout_s)
+            cls.send_rcs_command(host, port, "stop", timeout_s=timeout_s)
             log.info("LabRecorder RCS stop acknowledged (XDF finalizes inside LabRecorder).")
             return True
         except (OSError, RuntimeError) as exc:
@@ -223,12 +216,12 @@ class ExternalLabRecorderInstance:
         try:
             result = cls.run_labrecorder_capture(exe_path=exe_path, base_config_path=base_config)
         except (FileNotFoundError, TimeoutError, RuntimeError, OSError, configparser.Error) as exc:
-            logger.error(f"LabRecorder capture failed to start: {exc}; continuing with screenshots and Cortex capture")
+            logger.error(f"LabRecorder capture failed to start: {exc}")
             startup_status["labrecorder_exit_code"] = 1
             startup_status["labrecorder_started"] = False
             return startup_status
 
-        startup_status["labrecorder_rcs_host"] = launch_labrecorder_capture.DEFAULT_HOST
+        startup_status["labrecorder_rcs_host"] = DEFAULT_HOST
         startup_status["labrecorder_rcs_port"] = result.rcs_port
         if result.recording_path is None:
             logger.error(
@@ -250,130 +243,6 @@ class ExternalLabRecorderInstance:
         return startup_status
 
 
-    def run_main(self):
-        # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        )
-
-        args = _parse_args()
-        capture_mode = CAPTURE_MODE_MOTION if args.motion_only else CAPTURE_MODE_FULL
-        cortex_streams = list(CORTEX_STREAMS_MOTION if capture_mode == CAPTURE_MODE_MOTION else CORTEX_STREAMS_FULL)
-
-        logger.info(f"[MAIN] capture_mode {capture_mode}\n\tcortex_streams: {cortex_streams}")
-
-        # Create timestamped output directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path(f"./output/{timestamp}").resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"[MAIN] output_dir {output_dir.resolve().as_posix()}: STARTING at {timestamp}...")
-
-        stats.update(output_dir=output_dir)
-        external_capture_status = {
-            "labrecorder_started": False,
-            "labrecorder_exit_code": None,
-            "labrecorder_recording_path": None,
-            "labrecorder_pid": None,
-            "labrecorder_rcs_host": None,
-            "labrecorder_rcs_port": None,
-            "labrecorder_stop_rcs_ok": None,
-        }
-
-        logger.info(f"═══════════════════════════════════════════")
-        logger.info(f"  EmotivPro Full Analysis Orchestrator")
-        logger.info(f"  Capture mode: {capture_mode}")
-        logger.info(f"  Output: {output_dir}")
-        logger.info(f"  Interval: {SCREENSHOT_INTERVAL_SECONDS}s (screenshot threads only in '{CAPTURE_MODE_FULL}' mode)")
-        logger.info(f"  Cortex streams: {cortex_streams}")
-        logger.info(f"═══════════════════════════════════════════")
-
-        # Diagnostic: list visible windows so user can verify titles
-        try:
-            visible_windows = ScreenshotHelper.list_visible_windows()
-            logger.info(f"Visible windows ({len(visible_windows)}):")
-            for hwnd, title in sorted(visible_windows.items(), key=lambda x: x[1].lower()):
-                logger.info(f"  [{hwnd:#010x}] {title}")
-        except Exception as e:
-            logger.warning(f"Could not enumerate windows: {e}")
-
-        try:
-            external_capture_status = start_external_lsl_capture()
-        except (FileNotFoundError, RuntimeError):
-            return 1
-
-        exit_code = 0
-        try:
-            # Start worker threads
-            threads: List[threading.Thread] = []
-
-            # Launch dashboard (runs in main thread / Qt event loop)
-            try:
-                app, window = run_dashboard(output_dir, capture_mode, cortex_streams)
-
-                # Handle Ctrl+C gracefully within Qt
-                def signal_handler(*args):
-                    _shutdown_event.set()
-                    logger.info("Shutdown signal received...")
-                    window.close()
-
-                signal.signal(signal.SIGINT, signal_handler)
-
-                # Start Qt event loop
-                exit_code = app.exec_()
-
-            except ImportError:
-                logger.warning("PyQt5 not available, falling back to console-only mode")
-                try:
-                    while not _shutdown_event.is_set():
-                        time.sleep(2)
-                        s = stats.snapshot()
-                        elapsed = datetime.now() - s["start_time"]
-                        shot = ""
-                        if capture_mode == CAPTURE_MODE_FULL:
-                            shot = f"EEG: {s['eeg_screenshots_count']} | QMap: {s['quality_map_screenshots_count']} | "
-                        logger.info(
-                            f"[Status] Elapsed: {elapsed} | {shot}"
-                            f"Cortex: {'✅' if s['is_cortex_connected'] else '⏳'}"
-                        )
-                except KeyboardInterrupt:
-                    pass
-
-
-                exit_code = 0
-        finally:
-            _shutdown_event.set()
-            lr_port = external_capture_status.get("labrecorder_rcs_port")
-            if lr_port is not None:
-                lr_host = external_capture_status.get("labrecorder_rcs_host") or self.DEFAULT_HOST
-                external_capture_status["labrecorder_stop_rcs_ok"] = self.request_labrecorder_stop_via_rcs(lr_host, lr_port)
-
-        # Save session metadata
-        try:
-            meta = {
-                "start_time": stats.start_time.isoformat(),
-                "end_time": datetime.now().isoformat(),
-                "labrecorder_started": external_capture_status["labrecorder_started"],
-                "labrecorder_exit_code": external_capture_status["labrecorder_exit_code"],
-                "labrecorder_recording_path": external_capture_status["labrecorder_recording_path"],
-                "labrecorder_pid": external_capture_status["labrecorder_pid"],
-                "labrecorder_rcs_host": external_capture_status["labrecorder_rcs_host"],
-                "labrecorder_rcs_port": external_capture_status["labrecorder_rcs_port"],
-                "labrecorder_stop_rcs_ok": external_capture_status["labrecorder_stop_rcs_ok"],
-            }
-            with open(output_dir / "session_metadata.json", "w") as f:
-                json.dump(meta, f, indent=2)
-            logger.info(f"Session metadata saved to {output_dir / 'session_metadata.json'}")
-        except Exception as e:
-            logger.error(f"Failed to save session metadata: {e}")
-
-        logger.info("Full analysis session complete.")
-        return exit_code
-
-
-
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -389,16 +258,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """ 
-    from officialemotivsoftwarereverseengineer.launchers import launch_emotiv_lsl, launch_labrecorder_capture
-
-
-    """
+    """Launch LabRecorder, start recording, and print the active XDF path."""
     args = parse_args(argv if argv is not None else sys.argv[1:])
-    exe_path = resolve_exe_path(args.exe)
-    base_config_path = resolve_config_path(args.config)
+    exe_path = ExternalLabRecorderInstance.resolve_exe_path(args.exe)
+    base_config_path = ExternalLabRecorderInstance.resolve_config_path(args.config)
     try:
-        result = run_labrecorder_capture(exe_path=exe_path, base_config_path=base_config_path, host=args.host, rcs_port=args.port, rcs_timeout_s=args.rcs_timeout, poll_interval_s=args.poll_interval, refresh_wait_s=args.refresh_wait)
+        result = ExternalLabRecorderInstance.run_labrecorder_capture(exe_path=exe_path, base_config_path=base_config_path, host=args.host, rcs_port=args.port, rcs_timeout_s=args.rcs_timeout, poll_interval_s=args.poll_interval, refresh_wait_s=args.refresh_wait)
     except (FileNotFoundError, TimeoutError, RuntimeError, OSError, configparser.Error) as exc:
         print(str(exc), file=sys.stderr)
         return 1

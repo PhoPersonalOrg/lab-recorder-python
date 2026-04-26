@@ -14,3 +14,10 @@ dependencies = [
     "pylsl>=1.17.6",
     "pyxdf>=1.17.0",
 ]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["labrecorder"]
