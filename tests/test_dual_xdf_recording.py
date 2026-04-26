@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import FrozenSet, List, Optional, Tuple
 
+import numpy as np
 import pylsl
 
 from labrecorder.launch_and_control_external_cpp_labrecorder_app import (
@@ -91,14 +93,100 @@ class TestMarkerOutlet:
         print(f"  [Outlet] Created LSL outlet: {self.STREAM_NAME}")
 
 
-    def push_entries(self, entries: List[str], interval: float = PUSH_INTERVAL) -> None:
-        """Push each entry as a string marker sample with a short delay between."""
-        for entry in entries:
+    def push_entries(self, entries: List[str], interval: float = PUSH_INTERVAL, int16_outlet: Optional["TestIrregularInt16Outlet"] = None) -> None:
+        """Push each entry as a string marker sample with a short delay between.
+
+        If *int16_outlet* is provided one int16 sample is co-pushed per entry
+        (same loop iteration, so timestamps stay tightly coupled).
+        """
+        for idx, entry in enumerate(entries):
             ts = pylsl.local_clock()
             self.outlet.push_sample([entry], timestamp=ts)
             self.pushed_timestamps.append(ts)
+            if int16_outlet is not None:
+                int16_outlet.push_entry(idx, entry, ts)
             print(f"  [Outlet] Pushed: {entry!r}  (t={ts:.4f})")
             time.sleep(interval)
+
+
+class TestPeriodicFloatOutlet:
+    """Creates an LSL float32 outlet at a fixed nominal sample rate and pushes
+    a deterministic 3-channel ramp while an external stop event is clear."""
+
+    STREAM_NAME = "TestPeriodicFloat"
+    STREAM_TYPE = "EEG"
+    SOURCE_ID = "test_dual_xdf_float_001"
+    CHANNEL_COUNT = 3
+    NOMINAL_SRATE = 10.0  # Hz
+
+    def __init__(self) -> None:
+        info = pylsl.StreamInfo(name=self.STREAM_NAME, type=self.STREAM_TYPE, channel_count=self.CHANNEL_COUNT, nominal_srate=self.NOMINAL_SRATE, channel_format=pylsl.cf_float32, source_id=self.SOURCE_ID)
+        info.desc().append_child_value("manufacturer", "test_dual_xdf_recording")
+        self.outlet = pylsl.StreamOutlet(info)
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.pushed_samples: List[List[float]] = []
+        print(f"  [Outlet] Created LSL outlet: {self.STREAM_NAME} @ {self.NOMINAL_SRATE} Hz")
+
+
+    def start(self) -> None:
+        """Start background producer thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._producer, daemon=True)
+        self._thread.start()
+
+
+    def stop(self) -> None:
+        """Signal the producer to stop and wait for it to finish."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+
+
+    def _producer(self) -> None:
+        interval = 1.0 / self.NOMINAL_SRATE
+        counter = 0
+        while not self._stop_event.is_set():
+            sample = [float(counter), float(counter + 1), float(counter + 2)]
+            self.outlet.push_sample(sample, timestamp=pylsl.local_clock())
+            self.pushed_samples.append(sample)
+            counter += 1
+            self._stop_event.wait(interval)
+
+
+class TestIrregularInt16Outlet:
+    """Creates an LSL int16 outlet and pushes one 2-channel sample per marker
+    entry with deterministic values: [entry_index, len(entry) % 32768]."""
+
+    STREAM_NAME = "TestIrregularInt16"
+    STREAM_TYPE = "Markers"
+    SOURCE_ID = "test_dual_xdf_int16_001"
+    CHANNEL_COUNT = 2
+
+    def __init__(self) -> None:
+        info = pylsl.StreamInfo(name=self.STREAM_NAME, type=self.STREAM_TYPE, channel_count=self.CHANNEL_COUNT, nominal_srate=pylsl.IRREGULAR_RATE, channel_format=pylsl.cf_int16, source_id=self.SOURCE_ID)
+        info.desc().append_child_value("manufacturer", "test_dual_xdf_recording")
+        self.outlet = pylsl.StreamOutlet(info)
+        self.pushed_samples: List[List[int]] = []
+        print(f"  [Outlet] Created LSL outlet: {self.STREAM_NAME}")
+
+
+    def push_entry(self, idx: int, entry: str, ts: float) -> None:
+        sample = [idx % 32768, len(entry) % 32768]
+        self.outlet.push_sample(sample, timestamp=ts)
+        self.pushed_samples.append(sample)
+
+
+# ---------------------------------------------------------------------------
+# All outlet stream names — used to filter find_streams results
+# ---------------------------------------------------------------------------
+
+TEST_STREAM_NAMES: FrozenSet[str] = frozenset([
+    TestMarkerOutlet.STREAM_NAME,
+    TestPeriodicFloatOutlet.STREAM_NAME,
+    TestIrregularInt16Outlet.STREAM_NAME,
+])
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +252,8 @@ def stop_external_cpp_recorder(proc: Optional[subprocess.Popen], rcs_port: int, 
 # Parallel dual recording — single push feeds both recorders
 # ---------------------------------------------------------------------------
 
-def run_parallel_dual_recording(builtin_path: Path, external_path: Path, outlet: TestMarkerOutlet, exe_path: Path, base_config_path: Path) -> Tuple[bool, bool]:
-    """Start both recorders, push ``TEST_LOG_ENTRIES`` once, then stop both.
+def run_parallel_dual_recording(builtin_path: Path, external_path: Path, marker_outlet: TestMarkerOutlet, float_outlet: TestPeriodicFloatOutlet, int16_outlet: TestIrregularInt16Outlet, exe_path: Path, base_config_path: Path) -> Tuple[bool, bool]:
+    """Start both recorders, push test data once, then stop both.
 
     The external C++ recorder is brought to "recording" first because its startup
     (process launch + RCS negotiation + stream discovery) is slower.  The Python
@@ -193,19 +281,27 @@ def run_parallel_dual_recording(builtin_path: Path, external_path: Path, outlet:
     recorder.config.set("recording.clock_sync_interval", 60.0)
 
     streams = recorder.find_streams(timeout=5.0)
-    target_streams = [s for s in streams if s.name() == TestMarkerOutlet.STREAM_NAME]
+    target_streams = [s for s in streams if s.name() in TEST_STREAM_NAMES]
     if not target_streams:
-        print("  [Internal] ERROR: Could not find test marker stream!")
+        print("  [Internal] ERROR: Could not find any test streams!")
         if external_started:
             stop_external_cpp_recorder(proc, rcs_port, temp_cfg, terminate=True)
         return False, False
+
+    found_names = {s.name() for s in target_streams}
+    missing = TEST_STREAM_NAMES - found_names
+    if missing:
+        print(f"  [Internal] WARNING: streams not found: {missing}")
+    print(f"  [Internal] Found streams: {found_names}")
 
     recorder.start_recording(filename=str(builtin_path), streams=target_streams)
     print("  [Internal] Recording started.")
 
     # --- Both recorders are now active — push test data exactly once ---
     print("\n=== Pushing test data (both recorders active) ===")
-    outlet.push_entries(TEST_LOG_ENTRIES)
+    float_outlet.start()
+    marker_outlet.push_entries(TEST_LOG_ENTRIES, int16_outlet=int16_outlet)
+    float_outlet.stop()
 
     # Give writer threads time to flush the last samples
     print("  Flushing ...")
@@ -266,12 +362,18 @@ def validate_xdf(path: Path, label: str) -> bool:
         name = info["name"][0] if "name" in info else "?"
         stype = info["type"][0] if "type" in info else "?"
         n_samples = len(stream["time_stamps"])
-        print(f"    Stream {i}: name={name!r}  type={stype!r}  samples={n_samples}")
+        fmt = info.get("channel_format", ["?"])[0]
+        print(f"    Stream {i}: name={name!r}  type={stype!r}  format={fmt!r}  samples={n_samples}")
 
-        if stream["time_series"] is not None:
+        if name == TestMarkerOutlet.STREAM_NAME and stream["time_series"] is not None:
             for j, (sample, ts) in enumerate(zip(stream["time_series"], stream["time_stamps"])):
                 sample_text = sample[0] if isinstance(sample, list) else sample
                 print(f"      [{j:3d}] t={float(ts):.4f}  -> {sample_text!r}")
+        elif stream["time_series"] is not None and n_samples > 0:
+            ts_arr = stream["time_stamps"]
+            data = stream["time_series"]
+            print(f"      shape={np.asarray(data).shape}  t_start={float(ts_arr[0]):.4f}  t_end={float(ts_arr[-1]):.4f}")
+            print(f"      first row: {data[0]}  last row: {data[-1]}")
 
     if len(streams) == 0:
         print("  ERROR: no streams in XDF file")
@@ -352,6 +454,71 @@ def compare_marker_streams(path_a: Path, label_a: str, path_b: Path, label_b: st
     return True
 
 
+def _load_stream_by_name(path: Path, stream_name: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Return ``(time_series, time_stamps)`` as numpy arrays for *stream_name* from *path*, or ``None`` on failure."""
+    try:
+        import pyxdf
+        streams, _ = pyxdf.load_xdf(str(path))
+    except ImportError:
+        print("  [Compare] pyxdf not installed — skipping numeric comparison.")
+        return None
+    except Exception as exc:
+        print(f"  [Compare] ERROR loading {path.name}: {exc}")
+        return None
+
+    for stream in streams:
+        if stream["info"].get("name", [""])[0] == stream_name:
+            ts_arr = np.asarray(stream["time_stamps"], dtype=np.float64)
+            data_arr = np.asarray(stream["time_series"], dtype=np.float64)
+            return data_arr, ts_arr
+    print(f"  [Compare] Stream {stream_name!r} not found in {path.name}")
+    return None
+
+
+def compare_numeric_stream(path_a: Path, label_a: str, path_b: Path, label_b: str, stream_name: str, rtol: float = 1e-4, atol: float = 1e-4) -> bool:
+    """Compare numeric time_series from *stream_name* in two XDF files.
+
+    Requires equal sample count and numpy.allclose on payloads.  Timestamps
+    are intentionally not compared — clock-offset handling differs between
+    the Python and C++ implementations.
+
+    Returns ``True`` if payloads match (or counts differ by at most 1, which
+    is acceptable for the periodic float stream due to stop-time races).
+    """
+    print(f"\n--- Comparing numeric stream {stream_name!r} ---")
+    result_a = _load_stream_by_name(path_a, stream_name)
+    result_b = _load_stream_by_name(path_b, stream_name)
+
+    if result_a is None:
+        print(f"  ERROR: could not load {stream_name!r} from {label_a} ({path_a.name})")
+        return False
+    if result_b is None:
+        print(f"  ERROR: could not load {stream_name!r} from {label_b} ({path_b.name})")
+        return False
+
+    data_a, _ = result_a
+    data_b, _ = result_b
+    print(f"  {label_a}: {len(data_a)} samples  shape={data_a.shape}")
+    print(f"  {label_b}: {len(data_b)} samples  shape={data_b.shape}")
+
+    n_a, n_b = len(data_a), len(data_b)
+    if abs(n_a - n_b) > 1:
+        print(f"  MISMATCH: sample counts differ by more than 1 ({n_a} vs {n_b})")
+        return False
+    if n_a != n_b:
+        print(f"  NOTE: sample counts differ by 1 ({n_a} vs {n_b}) — trimming to min for payload check")
+
+    n_cmp = min(n_a, n_b)
+    close = np.allclose(data_a[:n_cmp], data_b[:n_cmp], rtol=rtol, atol=atol)
+    if not close:
+        diff = np.abs(data_a[:n_cmp] - data_b[:n_cmp])
+        print(f"  MISMATCH: payloads differ  max_abs_diff={diff.max():.6g}  mean_abs_diff={diff.mean():.6g}")
+        return False
+
+    print(f"  Numeric payloads match ({n_cmp} samples compared).")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -385,15 +552,17 @@ def main() -> int:
     print(f"\nExecutable: {exe_path}")
     print(f"Config:     {base_config_path}")
 
-    # Create the shared LSL outlet before launching either recorder
-    print("\n--- Creating LSL outlet ---")
-    outlet = TestMarkerOutlet()
+    # Create all LSL outlets before launching either recorder
+    print("\n--- Creating LSL outlets ---")
+    marker_outlet = TestMarkerOutlet()
+    float_outlet = TestPeriodicFloatOutlet()
+    int16_outlet = TestIrregularInt16Outlet()
 
-    print("  Waiting for outlet to become discoverable ...")
+    print("  Waiting for outlets to become discoverable ...")
     time.sleep(2.0)
 
     # Start both recorders in parallel with a single push
-    internal_ok, external_ok = run_parallel_dual_recording(builtin_path, external_path, outlet, exe_path, base_config_path)
+    internal_ok, external_ok = run_parallel_dual_recording(builtin_path, external_path, marker_outlet, float_outlet, int16_outlet, exe_path, base_config_path)
 
     # Validate both files
     print("\n" + "=" * 70)
@@ -402,8 +571,12 @@ def main() -> int:
     v1 = validate_xdf(builtin_path, "Internal Python LabRecorder") if internal_ok else False
     v2 = validate_xdf(external_path, "External C++ LabRecorder") if external_ok else False
 
-    # Compare marker sequences
-    compare_ok = compare_marker_streams(builtin_path, "Internal", external_path, "External") if (v1 and v2) else False
+    # Compare all streams between internal and external files
+    compare_markers_ok = compare_marker_streams(builtin_path, "Internal", external_path, "External") if (v1 and v2) else False
+    compare_float_ok = compare_numeric_stream(builtin_path, "Internal", external_path, "External", TestPeriodicFloatOutlet.STREAM_NAME) if (v1 and v2) else False
+    compare_int16_ok = compare_numeric_stream(builtin_path, "Internal", external_path, "External", TestIrregularInt16Outlet.STREAM_NAME) if (v1 and v2) else False
+
+    compare_ok = compare_markers_ok and compare_float_ok and compare_int16_ok
 
     # Summary
     print("\n" + "=" * 70)
@@ -411,7 +584,10 @@ def main() -> int:
     print("=" * 70)
     print(f"  Internal (Python library):  {'PASS' if (internal_ok and v1) else 'FAIL'}")
     print(f"  External (C++ subprocess):  {'PASS' if (external_ok and v2) else 'FAIL'}")
-    print(f"  Marker sequences match:     {'PASS' if compare_ok else ('SKIP' if not (v1 and v2) else 'FAIL')}")
+    skip_cmp = not (v1 and v2)
+    print(f"  Marker sequences match:     {'PASS' if compare_markers_ok else ('SKIP' if skip_cmp else 'FAIL')}")
+    print(f"  Float stream match:         {'PASS' if compare_float_ok else ('SKIP' if skip_cmp else 'FAIL')}")
+    print(f"  Int16 stream match:         {'PASS' if compare_int16_ok else ('SKIP' if skip_cmp else 'FAIL')}")
     print(f"\n  Output files in: {TEMP_OUTPUT_DIR}")
     if builtin_path.exists():
         print(f"    {builtin_path.name}  ({builtin_path.stat().st_size} bytes)")
