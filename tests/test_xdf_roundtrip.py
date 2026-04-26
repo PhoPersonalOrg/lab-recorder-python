@@ -40,6 +40,28 @@ class TestXDFRoundTrip(unittest.TestCase):
             assert_xdf_matches_fixture(self, output_path, include_clock_offsets=False)
 
 
+    def test_lsl_list_shaped_string_samples_round_trip(self) -> None:
+        """Samples that arrive from pylsl as ['text'] (list-wrapped) must be stored as plain strings in XDF, matching C++ LabRecorder behaviour."""
+        lsl_samples = [["Session started"], ["Event: A"], ["Event: B"], ["Session ended"]]
+        timestamps = [1.0, 2.0, 3.0, 4.0]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "lsl_string_regression.xdf"
+            _, marker_info = build_minimal_stream_infos()
+            writer = SimpleXDFWriter(str(output_path))
+            writer.open()
+            writer.add_stream(cast(Any, marker_info), stream_key=marker_info.uid())
+            writer.write_samples(marker_info.uid(), lsl_samples, timestamps)
+            writer.write_stream_footer(marker_info.uid())
+            writer.close()
+
+            streams, _ = pyxdf.load_xdf(str(output_path))
+            marker_stream = next(s for s in streams if s["info"]["name"][0] == "SendDataString")
+            for i, (expected, row) in enumerate(zip(lsl_samples, marker_stream["time_series"])):
+                stored = row[0] if isinstance(row, list) else row
+                self.assertEqual(stored, expected[0], f"Sample {i}: expected {expected[0]!r}, got {stored!r} (list repr leak)")
+
+
     def _write_minimal_fixture_equivalent(self, output_path: Path) -> None:
         writer = SimpleXDFWriter(str(output_path))
         eeg_info, marker_info = build_minimal_stream_infos()

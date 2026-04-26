@@ -222,7 +222,7 @@ def run_parallel_dual_recording(builtin_path: Path, external_path: Path, outlet:
 
     # --- Stop external recorder ---
     if external_started:
-        stop_external_cpp_recorder(proc, rcs_port, temp_cfg, terminate=False)
+        stop_external_cpp_recorder(proc, rcs_port, temp_cfg, terminate=True)
         time.sleep(0.5)  # brief wait for C++ writer to finalise
         external_ok = external_path.exists() and external_path.stat().st_size > 0
         if external_ok:
