@@ -116,22 +116,22 @@ def start_external_cpp_recorder(external_path: Path, exe_path: Path, base_config
     temp_config_path = ExternalLabRecorderInstance.build_temp_config(base_config_path, port)
     try:
         proc = ExternalLabRecorderInstance.launch_labrecorder(exe_path, temp_config_path)
-        print(f"  [External] C++ LabRecorder launched (pid={proc.pid}), waiting for RCS on :{port} …")
+        print(f"  [External] C++ LabRecorder launched (pid={proc.pid}), waiting for RCS on :{port} ...")
         ExternalLabRecorderInstance.wait_for_rcs(DEFAULT_HOST, port, timeout_s=30.0, poll_interval_s=0.5)
         print("  [External] RCS ready.")
 
         try:
             resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, f"filename {external_path}")
-            print(f"  [External] filename → {resp.strip()}")
+            print(f"  [External] filename -> {resp.strip()}")
         except RuntimeError as exc:
             print(f"  [External] WARNING: filename command not acknowledged ({exc}); path may follow config default.")
 
         resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, "update")
-        print(f"  [External] update → {resp.strip()}")
+        print(f"  [External] update -> {resp.strip()}")
         time.sleep(2.0)  # allow C++ LabRecorder to enumerate available streams
 
         resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, "start")
-        print(f"  [External] start → {resp.strip()}")
+        print(f"  [External] start -> {resp.strip()}")
         return proc, port, temp_config_path
     except Exception as exc:
         print(f"  [External] ERROR: {exc}")
@@ -202,7 +202,7 @@ def run_parallel_dual_recording(builtin_path: Path, external_path: Path, outlet:
     outlet.push_entries(TEST_LOG_ENTRIES)
 
     # Give writer threads time to flush the last samples
-    print("  Flushing …")
+    print("  Flushing ...")
     time.sleep(1.0)
 
     # --- Stop internal recorder ---
@@ -265,7 +265,7 @@ def validate_xdf(path: Path, label: str) -> bool:
         if stream["time_series"] is not None:
             for j, (sample, ts) in enumerate(zip(stream["time_series"], stream["time_stamps"])):
                 sample_text = sample[0] if isinstance(sample, list) else sample
-                print(f"      [{j:3d}] t={float(ts):.4f}  → {sample_text!r}")
+                print(f"      [{j:3d}] t={float(ts):.4f}  -> {sample_text!r}")
 
     if len(streams) == 0:
         print("  ERROR: no streams in XDF file")
@@ -365,7 +365,7 @@ def main() -> int:
         return 1
     if not base_config_path.exists():
         print(f"\nERROR: LabRecorder config not found: {base_config_path}")
-        print("  Set LABRECORDER_CONFIG or update DEFAULT_CONFIG_PATH in launch_and_control_external_cpp_labrecorder_app.py")
+        print("  Set LABRECORDER_CONFIG to a valid App-LabRecorder .cfg, or ensure labrecorder/default_external_labrecorder.cfg is present.")
         return 1
 
     TEMP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -383,7 +383,7 @@ def main() -> int:
     print("\n--- Creating LSL outlet ---")
     outlet = TestMarkerOutlet()
 
-    print("  Waiting for outlet to become discoverable …")
+    print("  Waiting for outlet to become discoverable ...")
     time.sleep(2.0)
 
     # Start both recorders in parallel with a single push

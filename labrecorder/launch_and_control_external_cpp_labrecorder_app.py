@@ -6,6 +6,8 @@ Launches LabRecorder in the background with the Emotiv capture config and starts
 After start, the launcher queries RCS ``recordingpath`` and prints the active XDF path. That command is provided
 by the App-LabRecorder fork (not stock LabStreamingLayer builds): rebuild App-LabRecorder and set
 ``LABRECORDER_EXE`` / ``--exe`` to that binary, or path discovery will fail with a clear error.
+
+Default base config is ``labrecorder/default_external_labrecorder.cfg`` (overridable with ``LABRECORDER_CONFIG`` / ``--config``).
 """
 
 import argparse
@@ -25,7 +27,8 @@ logger = logging.getLogger("lab-recorder-python.ExternalCppLabRecorderBridge")
 
 # DEFAULT_EXE_PATH = Path(r"C:\Users\pho\bin\LabRecorder\LabRecorder.exe")
 DEFAULT_EXE_PATH = Path(r"C:/Users/pho/repos/EmotivEpoc/ACTIVE_DEV/App-LabRecorder/out/build/win-vs-release-single/Release/LabRecorder.exe")
-DEFAULT_CONFIG_PATH = Path(r"C:\Users\pho\repos\EmotivEpoc\ACTIVE_DEV\PhoLogToLabStreamingLayer\data\emotiv_lsl_data_outputs\capture_emotiv_lsl_data_outputs.cfg")
+_DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent
+DEFAULT_CONFIG_PATH = _DEFAULT_CONFIG_DIR / "default_external_labrecorder.cfg"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_RCS_TIMEOUT_S = 30.0
 DEFAULT_RCS_POLL_INTERVAL_S = 0.5
