@@ -125,6 +125,10 @@ class ExternalLabRecorderInstance:
 
     @classmethod
     def send_rcs_command(cls, host: str, port: int, command: str, timeout_s: float = 5.0) -> str:
+        # NOTE: stock App-LabRecorder's tcpinterface.cpp unconditionally writes "OK" for
+        # every recognised line, regardless of whether the action succeeded.  Do not treat
+        # an "OK" response as proof that recording started, that a filename was applied, or
+        # that any other state change actually occurred in the C++ UI.
         payload = f"{command}\n".encode("utf-8")
         with socket.create_connection((host, port), timeout=timeout_s) as sock:
             sock.settimeout(timeout_s)

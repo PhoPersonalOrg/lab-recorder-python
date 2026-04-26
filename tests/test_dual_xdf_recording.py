@@ -121,7 +121,10 @@ def start_external_cpp_recorder(external_path: Path, exe_path: Path, base_config
         print("  [External] RCS ready.")
 
         try:
-            resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, f"filename {external_path}")
+            # C++ LabRecorder rcsUpdateFilename only parses {key:value} tokens; a bare
+            # path is silently ignored.  Split into {root:...}{template:...} instead.
+            rcs_filename_cmd = f"filename {{root:{external_path.parent.as_posix()}}}{{template:{external_path.name}}}"
+            resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, rcs_filename_cmd)
             print(f"  [External] filename -> {resp.strip()}")
         except RuntimeError as exc:
             print(f"  [External] WARNING: filename command not acknowledged ({exc}); path may follow config default.")
@@ -129,6 +132,9 @@ def start_external_cpp_recorder(external_path: Path, exe_path: Path, base_config
         resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, "update")
         print(f"  [External] update -> {resp.strip()}")
         time.sleep(2.0)  # allow C++ LabRecorder to enumerate available streams
+
+        resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, "select all")
+        print(f"  [External] select all -> {resp.strip()}")
 
         resp = ExternalLabRecorderInstance.send_rcs_command(DEFAULT_HOST, port, "start")
         print(f"  [External] start -> {resp.strip()}")
