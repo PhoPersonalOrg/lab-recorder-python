@@ -2220,3 +2220,4 @@ test_output_corrected.xdf
 build
 **/data/_test_xdf_output
 labrecorder_external_fallback.xdf
+data/debug_xdfs

@@ -30,6 +30,7 @@ import argparse
 import random
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -53,8 +54,14 @@ def _make_outlet(file_idx: int) -> pylsl.StreamOutlet:
     source_id = f"seq_debug_xdf_{file_idx}"
     info = pylsl.StreamInfo(name=STREAM_NAME, type=STREAM_TYPE, channel_count=1, nominal_srate=pylsl.IRREGULAR_RATE, channel_format=pylsl.cf_string, source_id=source_id)
     info.desc().append_child_value("description", f"Sequential debug text stream, session {file_idx}")
+    now_utc = datetime.now(timezone.utc)
+    lsl_offset = pylsl.local_clock()
+    phopylsl = info.desc().append_child("phopylslhelper")
+    phopylsl.append_child_value("version", "1.0.3")
+    phopylsl.append_child_value("stream_start_datetime", now_utc.strftime("%Y-%m-%d %I:%M:%S %p"))
+    phopylsl.append_child_value("stream_start_lsl_local_offset_seconds", str(lsl_offset))
     outlet = pylsl.StreamOutlet(info)
-    print(f"  [Session {file_idx}] Outlet created  source_id={source_id!r}")
+    print(f"  [Session {file_idx}] Outlet created  source_id={source_id!r}  stream_start={now_utc.strftime('%Y-%m-%d %I:%M:%S %p')} UTC  lsl_offset={lsl_offset:.3f}")
     return outlet
 
 
@@ -156,7 +163,6 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rng = random.Random(args.seed)
-    paths = [output_dir / f"seq_debug_{i}.xdf" for i in range(3)]
 
     print(f"Output dir : {output_dir}")
     print(f"Messages   : {args.num_messages} per session")
@@ -164,14 +170,19 @@ def main() -> None:
     print(f"Seed       : {args.seed}")
     print(f"Est. total : ~{3 * args.num_messages * 10 / 60 + 2 * args.gap_seconds / 60:.1f} min\n")
 
+    paths = []
     results = []
     for file_idx in range(3):
         if file_idx > 0:
             print(f"\n--- Gap: sleeping {args.gap_seconds:.0f} s before session {file_idx} ---")
             time.sleep(args.gap_seconds)
 
+        session_dt_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+        output_path = output_dir / f"seq_debug_{file_idx}_{session_dt_str}.xdf"
+        paths.append(output_path)
+
         print(f"\n=== Session {file_idx} ===")
-        ok = _run_session(file_idx, paths[file_idx], args.num_messages, rng)
+        ok = _run_session(file_idx, output_path, args.num_messages, rng)
         results.append(ok)
 
     print(f"\n=== Done: {sum(results)}/3 sessions succeeded ===")
