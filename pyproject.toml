@@ -1,6 +1,6 @@
 [project]
 name = "lab-recorder-python"
-version = "0.2.2"
+version = "0.2.3"
 authors = [
     { name="Yahmin Haj", email="yahminhaj@gmail.com" },
     { name="Pho Hale", email="phohale@gmail.com" }
@@ -13,4 +13,27 @@ dependencies = [
     "pyinstaller>=6.16.0",
     "pylsl>=1.17.6",
     "pyxdf>=1.17.0",
+]
+
+[project.optional-dependencies]
+service = [
+    "pillow>=11.3.0",
+    "pystray>=0.19.5",
+    "pywin32>=311",
+]
+
+[project.scripts]
+labrecorder-service = "labrecorder.service.main:run_service_entry"
+labrecorder-tray = "labrecorder.service.main:run_tray_entry"
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["labrecorder"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
 ]

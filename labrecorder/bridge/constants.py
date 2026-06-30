@@ -1,0 +1,9 @@
+from pathlib import Path
+
+_DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = _DEFAULT_CONFIG_DIR / "default_external_labrecorder.cfg"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_RCS_PORT = 22345
+DEFAULT_RCS_TIMEOUT_S = 30.0
+DEFAULT_RCS_POLL_INTERVAL_S = 0.5
+DEFAULT_STREAM_REFRESH_WAIT_S = 2.0

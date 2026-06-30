@@ -2218,3 +2218,6 @@
 **/desktop.ini
 test_output_corrected.xdf
 build
+labrecorder_external_fallback.xdf
+data/_test_xdf_output/*.xdf
+data/debug_xdfs/*.xdf
