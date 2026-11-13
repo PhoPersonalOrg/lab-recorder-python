@@ -191,6 +191,7 @@ class SimpleXDFWriter:
         with self.write_lock:
             self._write_chunk_header(tag, len(content_bytes), stream_id=stream_id)
             self.file.write(content_bytes)
+            self.file.flush()
 
 
     def _write_chunk_header(self, tag: int, content_length: int, stream_id: Optional[int] = None) -> None:

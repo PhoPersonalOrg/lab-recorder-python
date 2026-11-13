@@ -55,8 +55,11 @@ class LabRecorder:
 
         self.stream_inlets: Dict[str, pylsl.StreamInlet] = {}
         self.stream_ids: Dict[str, int] = {}
+        self.stream_infos: Dict[str, pylsl.StreamInfo] = {}
         self.offset_threads: Dict[str, threading.Thread] = {}
         self.offset_stop_events: Dict[str, threading.Event] = {}
+        self._file_rotate_lock = threading.RLock()
+        self._stream_setup_lock = threading.RLock()
 
 
     def find_streams(self, timeout: float = 2.0) -> List[pylsl.StreamInfo]:
@@ -80,6 +83,7 @@ class LabRecorder:
 
         self._ensure_output_directory()
         self._reset_runtime_state()
+        self._register_streams_with_manager(selected_streams)
         self.xdf_writer = SimpleXDFWriter(self.filename)
         self.xdf_writer.open()
         print(f"XDF file {self.filename} opened for writing.")
@@ -135,6 +139,79 @@ class LabRecorder:
 
         self._reset_runtime_state()
         print(f"Recording saved to {self.filename}")
+
+
+    def attach_streams(self, stream_infos: List[pylsl.StreamInfo]) -> int:
+        """Attach additional LSL streams to the open XDF. Returns how many were added."""
+        if not stream_infos:
+            return 0
+
+        attached = 0
+        with self._file_rotate_lock:
+            with self._stream_setup_lock:
+                for stream_info in stream_infos:
+                    uid = self._get_stream_key(stream_info)
+                    self.stream_manager.discovered_streams[uid] = stream_info
+                    self.stream_manager.selected_stream_uids.add(uid)
+                    if uid in self.stream_inlets:
+                        continue
+                    if not self.is_recording_flag or self.xdf_writer is None:
+                        continue
+                    try:
+                        self._setup_single_stream(uid, stream_info)
+                        attached += 1
+                    except Exception as e:
+                        print(f"Warning: could not attach stream {stream_info.name()} ({uid}): {e}")
+                ## END for stream_info in stream_infos....
+
+        if attached:
+            print(f"Attached {attached} stream(s) to the open XDF.")
+        return attached
+
+
+    def rotate_file(self, new_filename: str) -> str:
+        """Close the current XDF with footers and continue into a new file without dropping inlets."""
+        if not self.is_recording_flag:
+            raise RuntimeError("Cannot rotate file while not recording")
+        if not new_filename:
+            raise ValueError("new_filename is required")
+        if self.xdf_writer is None:
+            raise RuntimeError("No XDF writer is open")
+
+        old_filename = self.filename
+        with self._file_rotate_lock:
+            with self._stream_setup_lock:
+                self._drain_data_buffers()
+                for uid in list(self.stream_ids.keys()):
+                    try:
+                        self.xdf_writer.write_stream_footer(uid)
+                    except Exception as e:
+                        print(f"Error writing footer for stream {uid} during rotate: {e}")
+                ## END for uid in list(self.stream_ids.keys())....
+
+                self.xdf_writer.close()
+                self.xdf_writer = None
+
+                self.filename = new_filename
+                self._ensure_output_directory()
+                self.xdf_writer = SimpleXDFWriter(self.filename)
+                self.xdf_writer.open()
+                self.stream_ids.clear()
+
+                for uid, stream_info in list(self.stream_infos.items()):
+                    try:
+                        xdf_stream_id = self.xdf_writer.add_stream(stream_info, stream_key=uid)
+                        self.stream_ids[uid] = xdf_stream_id
+                    except Exception as e:
+                        print(f"Error re-adding stream {uid} after rotate: {e}")
+                ## END for uid, stream_info in list(self.stream_infos.items())....
+
+                for uid in list(self.stream_inlets.keys()):
+                    self._sample_clock_offset(uid)
+                ## END for uid in list(self.stream_inlets.keys())....
+
+        print(f"Rotated XDF from {old_filename} to {self.filename}")
+        return self.filename
 
 
     def start_remote_control_server(self) -> bool:
@@ -220,23 +297,56 @@ class LabRecorder:
     def _reset_runtime_state(self) -> None:
         self.stream_inlets.clear()
         self.stream_ids.clear()
+        self.stream_infos.clear()
         self.offset_threads.clear()
         self.offset_stop_events.clear()
         self._data_buffers.clear()
 
 
-    def _setup_recording_streams(self, selected_streams: Dict[str, pylsl.StreamInfo]) -> None:
+    def _register_streams_with_manager(self, selected_streams: Dict[str, pylsl.StreamInfo]) -> None:
         for uid, stream_info in selected_streams.items():
-            if uid in self.stream_inlets:
-                continue
-            try:
-                self._setup_single_stream(uid, stream_info)
-            except Exception as e:
-                print(f"Failed to set up stream {stream_info.name()} (UID: {uid}): {e}")
-                raise
+            self.stream_manager.discovered_streams[uid] = stream_info
+            self.stream_manager.selected_stream_uids.add(uid)
+        ## END for uid, stream_info in selected_streams.items()....
+
+
+    def _drain_data_buffers(self) -> None:
+        """Write buffered samples to the current writer. Caller holds `_file_rotate_lock`."""
+        if self.xdf_writer is None:
+            return
+        for uid, buffer in list(self._data_buffers.items()):
+            chunks_to_write = []
+            with self.buffer_lock:
+                if buffer:
+                    chunks_to_write.extend(buffer)
+                    buffer.clear()
+            for samples_chunk, timestamps_chunk in chunks_to_write:
+                try:
+                    self.xdf_writer.write_samples(uid, samples_chunk, timestamps_chunk)
+                except Exception as e:
+                    print(f"Error draining samples for stream UID {uid} to XDF: {e}")
+            ## END for samples_chunk, timestamps_chunk in chunks_to_write....
+
+        ## END for uid, buffer in list(self._data_buffers.items())....
+
+
+    def _setup_recording_streams(self, selected_streams: Dict[str, pylsl.StreamInfo]) -> None:
+        with self._stream_setup_lock:
+            for uid, stream_info in selected_streams.items():
+                if uid in self.stream_inlets:
+                    continue
+                try:
+                    self._setup_single_stream(uid, stream_info)
+                except Exception as e:
+                    print(f"Failed to set up stream {stream_info.name()} (UID: {uid}): {e}")
+                    raise
+            ## END for uid, stream_info in selected_streams.items()....
+
 
 
     def _setup_single_stream(self, uid: str, stream_info: pylsl.StreamInfo) -> None:
+        if self.xdf_writer is None:
+            raise RuntimeError("Cannot set up a stream without an open XDF writer")
         inlet = pylsl.StreamInlet(
             stream_info,
             max_buflen=self.config.get("recording.buffer_size", 360),
@@ -248,6 +358,7 @@ class LabRecorder:
         xdf_stream_id = self.xdf_writer.add_stream(inlet_info, stream_key=uid)
         self.stream_inlets[uid] = inlet
         self.stream_ids[uid] = xdf_stream_id
+        self.stream_infos[uid] = inlet_info
         self.acquisition_manager.add_stream(uid, inlet_info, inlet)
 
         first_sample, first_timestamp_lsl = inlet.pull_sample(timeout=1.0)
@@ -304,16 +415,20 @@ class LabRecorder:
 
 
     def _sample_clock_offset(self, stream_uid: str) -> None:
-        if self.xdf_writer is None or stream_uid not in self.stream_inlets:
+        if stream_uid not in self.stream_inlets:
             return
         inlet = self.stream_inlets[stream_uid]
         try:
             offset = inlet.time_correction(2.0)
             local_time = pylsl.local_clock()
             collection_time = local_time - offset
-            self.xdf_writer.write_clock_offset(stream_uid, collection_time, offset)
         except Exception as e:
             print(f"Timeout in time correction query for stream {stream_uid}: {e}")
+            return
+        with self._file_rotate_lock:
+            if self.xdf_writer is None:
+                return
+            self.xdf_writer.write_clock_offset(stream_uid, collection_time, offset)
 
 
     def _stop_background_threads(self) -> None:
@@ -339,8 +454,10 @@ class LabRecorder:
         next_boundary = time.monotonic() + interval
         while not self.shutdown_event.is_set():
             time.sleep(0.5)
-            if self.xdf_writer is not None and time.monotonic() >= next_boundary:
-                self.xdf_writer.write_boundary_chunk()
+            if time.monotonic() >= next_boundary:
+                with self._file_rotate_lock:
+                    if self.xdf_writer is not None:
+                        self.xdf_writer.write_boundary_chunk()
                 next_boundary = time.monotonic() + interval
 
 
@@ -360,11 +477,17 @@ class LabRecorder:
         if not new_streams:
             return
         print(f"Attaching {len(new_streams)} newly discovered streams.")
-        for uid, stream_info in new_streams.items():
-            try:
-                self._setup_single_stream(uid, stream_info)
-            except Exception as e:
-                print(f"Warning: could not attach stream {stream_info.name()} ({uid}): {e}")
+        with self._file_rotate_lock:
+            with self._stream_setup_lock:
+                for uid, stream_info in new_streams.items():
+                    if uid in self.stream_inlets:
+                        continue
+                    try:
+                        self._setup_single_stream(uid, stream_info)
+                    except Exception as e:
+                        print(f"Warning: could not attach stream {stream_info.name()} ({uid}): {e}")
+                ## END for uid, stream_info in new_streams.items()....
+
 
 
     def _get_stream_key(self, stream_info: pylsl.StreamInfo) -> str:
@@ -384,8 +507,9 @@ class LabRecorder:
 
     def _on_clock_reset(self, stream_uid: str) -> None:
         print(f"Clock reset detected for stream {stream_uid}. Writing boundary and new offset.")
-        if self.xdf_writer is not None:
-            self.xdf_writer.write_boundary_chunk()
+        with self._file_rotate_lock:
+            if self.xdf_writer is not None:
+                self.xdf_writer.write_boundary_chunk()
         self._sample_clock_offset(stream_uid)
 
 
@@ -393,19 +517,26 @@ class LabRecorder:
         print("XDF Writer thread started.")
         while self.is_recording_flag or any(self._data_buffers.values()):
             data_written = False
-            for uid, buffer in list(self._data_buffers.items()):
-                chunks_to_write = []
-                with self.buffer_lock:
-                    if buffer:
-                        chunks_to_write.extend(buffer)
-                        buffer.clear()
-                if chunks_to_write:
-                    data_written = True
-                    for samples_chunk, timestamps_chunk in chunks_to_write:
-                        try:
-                            self.xdf_writer.write_samples(uid, samples_chunk, timestamps_chunk)
-                        except Exception as e:
-                            print(f"Error writing samples for stream UID {uid} to XDF: {e}")
+            with self._file_rotate_lock:
+                for uid, buffer in list(self._data_buffers.items()):
+                    chunks_to_write = []
+                    with self.buffer_lock:
+                        if buffer:
+                            chunks_to_write.extend(buffer)
+                            buffer.clear()
+                    if chunks_to_write:
+                        data_written = True
+                        for samples_chunk, timestamps_chunk in chunks_to_write:
+                            try:
+                                if self.xdf_writer is None:
+                                    continue
+                                self.xdf_writer.write_samples(uid, samples_chunk, timestamps_chunk)
+                            except Exception as e:
+                                print(f"Error writing samples for stream UID {uid} to XDF: {e}")
+                        ## END for samples_chunk, timestamps_chunk in chunks_to_write....
+
+                ## END for uid, buffer in list(self._data_buffers.items())....
+
             if not data_written:
                 if self.is_recording_flag:
                     time.sleep(0.05)
