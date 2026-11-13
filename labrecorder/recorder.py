@@ -62,8 +62,8 @@ class LabRecorder:
         self._stream_setup_lock = threading.RLock()
 
 
-    def find_streams(self, timeout: float = 2.0) -> List[pylsl.StreamInfo]:
-        return self.stream_manager.find_streams(timeout)
+    def find_streams(self, timeout: float = 2.0, debug_print: bool = True) -> List[pylsl.StreamInfo]:
+        return self.stream_manager.find_streams(timeout, debug_print=debug_print)
 
 
     def select_streams_to_record(self, stream_uids: List[str]) -> None:
@@ -466,7 +466,7 @@ class LabRecorder:
         timeout = float(self.config.get("streams.timeout", 2.0))
         while not self.shutdown_event.wait(interval):
             try:
-                self.find_streams(timeout)
+                self.find_streams(timeout, debug_print=False)
                 self._attach_newly_selected_streams()
             except Exception as e:
                 print(f"Warning: stream watch update failed: {e}")

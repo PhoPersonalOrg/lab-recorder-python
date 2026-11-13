@@ -14,28 +14,34 @@ class StreamManager:
         self.selected_stream_uids: Set[str] = set()
         self.select_all_active = False
     
-    def find_streams(self, timeout: float = 2.0) -> List[pylsl.StreamInfo]:
+    def find_streams(self, timeout: float = 2.0, debug_print: bool = True) -> List[pylsl.StreamInfo]:
         """
         Discover available LSL streams.
         
         Args:
             timeout: Timeout for stream discovery in seconds
+            debug_print: Print the discovery banner and stream list (disable for
+                periodic background discovery to avoid console spam)
             
         Returns:
             List of discovered stream info objects
         """
-        print("Looking for LSL streams...")
+        if debug_print:
+            print("Looking for LSL streams...")
         streams_info_list = pylsl.resolve_streams(timeout)
         
         if not streams_info_list:
-            print("No LSL streams found.")
+            if debug_print:
+                print("No LSL streams found.")
             return []
 
-        print(f"Found {len(streams_info_list)} streams:")
+        if debug_print:
+            print(f"Found {len(streams_info_list)} streams:")
         self.discovered_streams.clear()
         
         for i, info in enumerate(streams_info_list):
-            print(f"  {i+1}. Name: {info.name()}, Type: {info.type()}, UID: {info.uid()}")
+            if debug_print:
+                print(f"  {i+1}. Name: {info.name()}, Type: {info.type()}, UID: {info.uid()}")
             self.discovered_streams[info.uid()] = info
 
         if self.select_all_active:
